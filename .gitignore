@@ -1,0 +1,9 @@
+.venv-win/*
+.bkp/*
+clockify-api-tests.http
+
+time_planner_backup.db
+time_planner_logged_activities.csv
+
+TimePlanner_cat2Clockify_tags.csv
+TimePlanner2Clockify.ini
