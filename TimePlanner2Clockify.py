@@ -1,9 +1,9 @@
-# Required: Python 3.9+; requests
 #!/bin/python3.9
-# TODO: Mudar locale/timezone para UTC
+# Required: Python 3.9+; requests
+# TODO: Fix: Change locale/timezone to UTC, and update convert_timeplanner_data()
+# TODO: Add: Create timeplanner_export2clockify()
 import os; os.chdir(os.path.dirname(os.path.realpath(__file__)))
-import sqlite3, configparser, csv
-import requests
+import sqlite3, requests, configparser, csv
 from datetime import datetime, timedelta, timezone
 
 
@@ -81,22 +81,32 @@ def setup():
 
     # Relationship between TimePlanner category (name) -> Clockify tag (name)
     # Set timeplanner_cat2clockify_tags_dict
-    with open(get_config('DEFAULT', 'TimePlanner_cat2Clockify_tags'), 'r') as csv_file:
-        csv_reader = csv.reader(csv_file)
-        next(csv_reader)
-        timeplanner_cat2clockify_tags_dict = {
-            timeplanner: clockify for timeplanner, clockify in csv_reader
-        }
+    try:
+        with open(get_config('DEFAULT', 'TimePlanner_cat2Clockify_tags'), 'r') as csv_file:
+            csv_reader = csv.reader(csv_file)
+            next(csv_reader)
+            timeplanner_cat2clockify_tags_dict = {
+                timeplanner: clockify for timeplanner, clockify in csv_reader
+            }
+    except FileNotFoundError:
+        timeplanner_cat2clockify_tags_dict = {}
+    except Exception:
+        raise
 
 def timeplanner_cat2clockify_tags(cat_id):
+    # (TimePlanner) Match category id in 'logged_activity' table with id in 'category' table, and return name
     timeplanner_cat_name = timeplanner_cats[cat_id]
     try:
+        # Relationship between TimePlanner category (name) and Clockify tag (name)
         clockify_tag_name = timeplanner_cat2clockify_tags_dict[timeplanner_cat_name]
     except KeyError:
+        # Relationship between TimePlanner category (name) and Clockify tag (name), not found
         clockify_tag_id = None
     except Exception:
         raise
-    clockify_tag_id = clockify_tags[clockify_tag_name]
+    else:
+        # (Clockify) Match tag name with tag id, return id
+        clockify_tag_id = clockify_tags[clockify_tag_name]
 
     tagIds = [clockify_tag_id] if clockify_tag_id is not None else None
     return {
@@ -192,6 +202,4 @@ def clockify_deleteall_timeentries(verbose=False):
 
 
 if __name__ == '__main__':
-    # timeplanner_db2clockify(verbose=True)
-    pass
-    # timeplanner_export2clockify(verbose=True)
+    timeplanner_db2clockify(verbose=True)
