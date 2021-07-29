@@ -1,8 +1,8 @@
 # Required: Python 3.9+; requests
 #!/bin/python3.9
-# TODO: Testar Antigo horario de verão?
+# TODO: Mudar locale/timezone para UTC
 import os; os.chdir(os.path.dirname(os.path.realpath(__file__)))
-import sqlite3, configparser, csv, json
+import sqlite3, configparser, csv
 import requests
 from datetime import datetime, timedelta, timezone
 
@@ -19,116 +19,90 @@ class CursorSQLite:
         self.cursor.close()
         self.conexao.close()
 
-# def send_request(request):
-#     try:
-#         request.raise_for_status()
-#     except requests.exceptions.HTTPError:
-#         print('HTTP error occurred!')
-#         raise
-#     except Exception:
-#         print('Other error occurred!')
-#         raise
-#     else:
-#         return request
-
+def send_request(request):
+    try:
+        request.raise_for_status()
+    except requests.exceptions.HTTPError:
+        print('HTTP error occurred!')
+        raise
+    except Exception:
+        print('Other error occurred!')
+        raise
+    else:
+        return request
 
 CONFIGS_FILE = 'TimePlanner2Clockify.ini'
 configs = configparser.ConfigParser()
 configs.read(CONFIGS_FILE)
+def get_config(section, key):
+    try:
+        return configs[section][key]
+    except KeyError as err:
+        raise ValueError(f"Error! value of {err} in the '{CONFIGS_FILE}' not found.")
+    except Exception:
+        raise
 
-try:
-    TIMEPLANNER_DB_FILE = configs['TimePlanner']['db_file']
-    # TIMEPLANNER_EXPORT_FILE = configs['Timeplanner']['export_file']
-except KeyError as err:
-    raise ValueError(f"Error! value of {err} of the '{CONFIGS_FILE}' is required.")
-except Exception:
-    raise
-with CursorSQLite(TIMEPLANNER_DB_FILE) as _cursor:
-    _cursor.execute('SELECT _id, name, archive_date_time FROM category')
-    timeplanner_cats = {
-        cat_id: str(cat_name)
-        for cat_id, cat_name, archive in _cursor.fetchall()
-        if not archive
-    }
 
-try:
-    BASE_ENDPOINT = configs['Clockify']['base_endpoint']
-    WORKSPACE_ID = configs['Clockify']['workspace_id']
-    USER_ID = configs['Clockify']['user_id']
-    API_KEY = configs['Clockify']['api_key']
-except KeyError as err:
-    raise ValueError(f"Error! value of {err} in the '{CONFIGS_FILE}' is required.")
-except Exception:
-    raise
+TIMEPLANNER_DB_FILE = get_config('TimePlanner', 'db_file')
+# TIMEPLANNER_EXPORT_FILE = get_config('TimePlanner', 'export_file')
+
+BASE_ENDPOINT = get_config('Clockify', 'base_endpoint')
+WORKSPACE_ID = get_config('Clockify', 'workspace_id')
+USER_ID = get_config('Clockify', 'user_id')
+API_KEY = get_config('Clockify', 'api_key')
 headers = {
     'X-Api-Key': API_KEY,
     'Content-Type': 'application/json',
 }
-try:
-    _request = requests.get(f'{BASE_ENDPOINT}/workspaces/{WORKSPACE_ID}/tags', headers=headers)
-    _request.raise_for_status()
+
+
+def setup():
+    global timeplanner_cats
+    global clockify_tags
+    global timeplanner_cat2clockify_tags_dict
+
+    # Set timeplanner_cats
+    with CursorSQLite(TIMEPLANNER_DB_FILE) as cursor:
+        cursor.execute('SELECT _id, name, archive_date_time FROM category')
+        timeplanner_cats = {
+            cat_id: str(cat_name)
+            for cat_id, cat_name, archive in cursor.fetchall()
+            if not archive
+        }
+
+    # Set clockify_tags
     clockify_tags = {
         str(tag['name']): tag['id']
-        for tag in _request.json()
+        for tag in send_request(
+            requests.get(f'{BASE_ENDPOINT}/workspaces/{WORKSPACE_ID}/tags', headers=headers)
+        ).json()
         if not tag['archived']
     }
-except requests.exceptions.HTTPError:
-    print('HTTP error occurred!')
-    raise
-except Exception:
-    print('Other error occurred!')
-    raise
-try:
-    _request = requests.get(f'{BASE_ENDPOINT}/workspaces/{WORKSPACE_ID}/user/{USER_ID}/time-entries', headers=headers)
-    _request.raise_for_status()
-    clockify_timeentries = [
-        { "description": timeentry["description"],
-          "start": timeentry["timeInterval"]["start"],
-          "end": timeentry["timeInterval"]["end"],
-          "billable": timeentry["billable"],
-          "projectId": timeentry["projectId"],
-          "taskId": timeentry["taskId"],
-          "tagIds": timeentry["tagIds"],
-        } for timeentry in _request.json()
-    ]
-except requests.exceptions.HTTPError:
-    print('HTTP error occurred!')
-    raise
-except Exception:
-    print('Other error occurred!')
-    raise
 
-# Relationship between TimePlanner category (name) -> Clockify tag (name)
-try:
-    _csv = configs['DEFAULT']['TimePlanner_cat2Clockify_tags']
-except KeyError as err:
-    raise ValueError(f"Error! value of {err} in the '{CONFIGS_FILE}' is required.")
-except Exception:
-    raise
-with open(_csv, 'r') as _csv_file:
-    _csv_reader = csv.reader(_csv_file)
-    next(_csv_reader)
-    timeplanner_cat2clockify_tags_dict = {
-        timeplanner: clockify for timeplanner, clockify in _csv_reader
-    }
-
+    # Relationship between TimePlanner category (name) -> Clockify tag (name)
+    # Set timeplanner_cat2clockify_tags_dict
+    with open(get_config('DEFAULT', 'TimePlanner_cat2Clockify_tags'), 'r') as csv_file:
+        csv_reader = csv.reader(csv_file)
+        next(csv_reader)
+        timeplanner_cat2clockify_tags_dict = {
+            timeplanner: clockify for timeplanner, clockify in csv_reader
+        }
 
 def timeplanner_cat2clockify_tags(cat_id):
+    timeplanner_cat_name = timeplanner_cats[cat_id]
     try:
-        timeplanner_cat_name = timeplanner_cats[cat_id]
         clockify_tag_name = timeplanner_cat2clockify_tags_dict[timeplanner_cat_name]
-        clockify_tag_id = clockify_tags[clockify_tag_name]
     except KeyError:
         clockify_tag_id = None
     except Exception:
         raise
+    clockify_tag_id = clockify_tags[clockify_tag_name]
 
     tagIds = [clockify_tag_id] if clockify_tag_id is not None else None
     return {
         "billable": False,
         "projectId": None,
         "taskId": None,
-        # "tagIds": None,
         "tagIds": tagIds,
     }
 
@@ -140,9 +114,26 @@ def convert_timeplanner_ms(time):
 
 
 def timeplanner_db2clockify(verbose=False):
+    setup()
+
+    # Set clockify_timeentries
+    clockify_timeentries = [
+        { "description": timeentry["description"],
+          "start": timeentry["timeInterval"]["start"],
+          "end": timeentry["timeInterval"]["end"],
+          "billable": timeentry["billable"],
+          "projectId": timeentry["projectId"],
+          "taskId": timeentry["taskId"],
+          "tagIds": timeentry["tagIds"],
+        } for timeentry in send_request(
+            requests.get(f'{BASE_ENDPOINT}/workspaces/{WORKSPACE_ID}/user/{USER_ID}/time-entries', headers=headers)
+        ).json()
+    ]
+
+    # Set new_timeentries
     with CursorSQLite(TIMEPLANNER_DB_FILE) as cursor:
         cursor.execute('SELECT name, date_time, value, pid FROM logged_activity')
-        timeentries = (
+        new_timeentries = (
             { "description": str(name) if name is not None else '',
               "start": (convert_timeplanner_data(date_time) - convert_timeplanner_ms(value)).strftime(r"%Y-%m-%dT%H:%M:%SZ"),
               "end": convert_timeplanner_data(date_time).strftime(r"%Y-%m-%dT%H:%M:%SZ"),
@@ -150,29 +141,20 @@ def timeplanner_db2clockify(verbose=False):
             for name, date_time, value, cat_id in cursor.fetchall()
         )
 
+    # Send new_timeentries
     success_entries = 0
-    for timeentry in timeentries:
-        if timeentry not in clockify_timeentries:
-            try:
-                _request = requests.post(
-                    f'{BASE_ENDPOINT}/workspaces/{WORKSPACE_ID}/time-entries',
-                    json=timeentry,
-                    headers=headers
-                )
-                _request.raise_for_status()
-            except requests.exceptions.HTTPError:
-                print('HTTP error occurred!')
-                raise
-            except Exception:
-                print('Other error occurred!')
-                raise
-            else:
-                if verbose:
-                    _id = _request.json()["id"]
-                    _start_time = _request.json()["timeInterval"]["start"]
-                    _description = _request.json()["description"]
-                    print(f'[+] Success! Sent: {_id} ({_start_time}): {_description}')
-                success_entries += 1
+    for new_timeentry in new_timeentries:
+        if new_timeentry not in clockify_timeentries:
+            request = send_request(
+                requests.post(f'{BASE_ENDPOINT}/workspaces/{WORKSPACE_ID}/time-entries', json=new_timeentry, headers=headers)
+            )
+            if verbose:
+                entry_id = request.json()["id"]
+                start_time = request.json()["timeInterval"]["start"]
+                description = request.json()["description"]
+                print(f'[+] Sent: {entry_id} ({start_time}): {description}')
+            success_entries += 1
+
     if verbose:
         if success_entries: print()
         print(f'[*] Finished! {success_entries} time entries have been sent.')
@@ -180,44 +162,36 @@ def timeplanner_db2clockify(verbose=False):
 
 
 # def timeplanner_export2clockify(verbose=False):
-#     with open(TIMEPLANNER_EXPORT_FILE, 'r') as _csv_file:
+#     with open(TIMEPLANNER_EXPORT_FILE, 'r') as csv_file:
 #         pass
 
 
 # DANGER-ZONE!!!
 def clockify_deleteall_timeentries(verbose=False):
-    try:
-        _request = requests.get(f'{BASE_ENDPOINT}/workspaces/{WORKSPACE_ID}/user/{USER_ID}/time-entries', headers=headers)
-        _request.raise_for_status()
-        timeentries_ids = [
-            timeentry["id"] for timeentry in _request.json()
-        ]
-    except requests.exceptions.HTTPError:
-        print('HTTP error occurred!')
-        raise
-    except Exception:
-        print('Other error occurred!')
-        raise
-    
+    clockify_timeentries = [
+        { "id": timeentry["id"],
+          "description": timeentry["description"],
+          "start": timeentry["timeInterval"]["start"],
+        }
+        for timeentry in send_request(
+            requests.get(f'{BASE_ENDPOINT}/workspaces/{WORKSPACE_ID}/user/{USER_ID}/time-entries', headers=headers)
+        ).json()
+    ]
+
     success_deleted = 0
-    for timeentry_id in timeentries_ids:
-        try:
-            _request = requests.delete(f"{BASE_ENDPOINT}/workspaces/{WORKSPACE_ID}/time-entries/{timeentry_id}", headers=headers)
-            _request.raise_for_status()
-        except requests.exceptions.HTTPError:
-            print('HTTP error occurred!')
-            raise
-        except Exception:
-            print('Other error occurred!')
-            raise
-        else:
-            if verbose: print(f'[+] Success! Deleted: {timeentry_id}.')
-            success_deleted += 1
-    
+    for clockify_timeentry in clockify_timeentries:
+        send_request(requests.delete(f'{BASE_ENDPOINT}/workspaces/{WORKSPACE_ID}/time-entries/{clockify_timeentry["id"]}', headers=headers))
+        if verbose:
+            print(f'[+] Deleted: {clockify_timeentry["id"]} ({clockify_timeentry["start"]}): {clockify_timeentry["description"]}')
+        success_deleted += 1
+
+    if verbose:
+        if success_deleted: print()
+        print(f'[*] Finished! {success_deleted} time entries have been deleted.')
     return success_deleted
-# DANGER-ZONE!!!
-# clockify_deleteall_timeentries(verbose=True)
+
 
 if __name__ == '__main__':
-    timeplanner_db2clockify(verbose=True)
+    # timeplanner_db2clockify(verbose=True)
+    pass
     # timeplanner_export2clockify(verbose=True)
